@@ -8,7 +8,7 @@ st.set_page_config(page_title="IDS Dashboard", layout="wide")
 
 st.title("🚨 Intrusion Detection System (Production Dashboard)")
 
-API_URL = "http://api:8000"
+API_URL = "https://ids-api.onrender.com"
 
 # -----------------------------
 # SIDEBAR INPUT
