@@ -8,3 +8,5 @@ matplotlib
 joblib
 sqlalchemy
 requests
+python-jose
+passlib[bcrypt]
