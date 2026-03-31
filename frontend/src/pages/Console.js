@@ -1,155 +1,114 @@
-import { useEffect, useState, useRef } from "react";
+import React, { useState, useEffect, useRef } from "react";
+import { motion } from "motion/react";
+import { Terminal, Circle, Pause, Play, Trash2, Download, Filter } from "lucide-react";
+import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
+import { Button } from "../components/ui/button";
+import { INITIAL_LOGS } from "../lib/ids-data";
 
-function Console() {
-  const [logs, setLogs] = useState([]);
-  const [connected, setConnected] = useState(false);
-  const wsRef = useRef(null);
-  const logsEndRef = useRef(null);
+const LEVEL_STYLES = {
+  ALERT: "text-rose-400", WARN: "text-amber-400", INFO: "text-emerald-400", DEBUG: "text-muted-foreground",
+};
+
+const LIVE_MESSAGES = [
+  { level: "INFO", source: "PACKET-CAPTURE", message: "Captured 384 packets from interface eth0 in last 1s" },
+  { level: "DEBUG", source: "FEATURE-EXT", message: "Extracted 41 KDD features from flow batch #" },
+  { level: "INFO", source: "ML-ENGINE", message: "RandomForest v2.3 inference: batch normal traffic" },
+  { level: "WARN", source: "NET-MONITOR", message: "Connection rate elevated on port 443: 87/s" },
+  { level: "INFO", source: "FIREWALL", message: "Rule RUL-003 matched: 12 ICMP packets filtered" },
+  { level: "DEBUG", source: "DB", message: "Log entry written — total records: " },
+  { level: "INFO", source: "NET-MONITOR", message: "Interface eth0 throughput: 14.2 Mbps rx / 2.1 Mbps tx" },
+  { level: "ALERT", source: "ML-ENGINE", message: "Anomalous pattern detected: investigating..." },
+  { level: "INFO", source: "ML-ENGINE", message: "False alarm — pattern resolved as normal traffic" },
+  { level: "DEBUG", source: "CONFIG", message: "Health check passed — all systems nominal" },
+];
+
+export default function Console() {
+  const [logs, setLogs] = useState(INITIAL_LOGS);
+  const [isLive, setIsLive] = useState(true);
+  const [filter, setFilter] = useState("ALL");
+  const scrollRef = useRef(null);
+  const batchRef = useRef(8822);
 
   useEffect(() => {
-    connectWebSocket();
-
-    return () => {
-      if (wsRef.current) {
-        wsRef.current.close();
-      }
-    };
-  }, []);
+    if (!isLive) return;
+    const interval = setInterval(() => {
+      const template = LIVE_MESSAGES[Math.floor(Math.random() * LIVE_MESSAGES.length)];
+      batchRef.current += 1;
+      const now = new Date();
+      const ts = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}.${String(now.getMilliseconds()).padStart(3, "0")}`;
+      setLogs((prev) => [
+        { timestamp: ts, level: template.level, source: template.source, message: template.message + (template.message.endsWith(" ") ? batchRef.current : "") },
+        ...prev,
+      ].slice(0, 200));
+    }, 1800 + Math.random() * 1200);
+    return () => clearInterval(interval);
+  }, [isLive]);
 
   useEffect(() => {
-    // Auto-scroll to bottom
-    if (logsEndRef.current) {
-      logsEndRef.current.scrollIntoView({ behavior: "smooth" });
-    }
+    if (scrollRef.current) scrollRef.current.scrollTop = 0;
   }, [logs]);
 
-  const connectWebSocket = () => {
-    try {
-      const ws = new WebSocket("ws://localhost:8000/ws");
+  const filtered = filter === "ALL" ? logs : logs.filter((l) => l.level === filter);
 
-      ws.onopen = () => {
-        console.log("WebSocket connected");
-        setConnected(true);
-      };
-
-      ws.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          if (data.type === "logs" && Array.isArray(data.data)) {
-            setLogs((prevLogs) => [...data.data, ...prevLogs].slice(0, 100));
-          }
-        } catch (error) {
-          console.error("Error parsing WebSocket message:", error);
-        }
-      };
-
-      ws.onerror = (error) => {
-        console.error("WebSocket error:", error);
-        setConnected(false);
-      };
-
-      ws.onclose = () => {
-        console.log("WebSocket disconnected");
-        setConnected(false);
-        // Try to reconnect every 5 seconds
-        setTimeout(connectWebSocket, 5000);
-      };
-
-      wsRef.current = ws;
-    } catch (error) {
-      console.error("Error connecting WebSocket:", error);
-      setTimeout(connectWebSocket, 5000);
-    }
-  };
-
-  const clearLogs = () => {
-    setLogs([]);
+  const handleExport = () => {
+    const text = filtered.map((l) => `[${l.timestamp}] [${l.level}] [${l.source}] ${l.message}`).join("\n");
+    const blob = new Blob([text], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url; link.download = `ids_logs_${new Date().toISOString().split("T")[0]}.txt`; link.click();
+    URL.revokeObjectURL(url);
   };
 
   return (
-    <div className="p-6 flex flex-col h-screen">
-      <div className="flex justify-between items-center mb-6">
+    <div className="p-4 md:p-6 space-y-5 h-full flex flex-col">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 flex-shrink-0">
         <div>
-          <h2 className="text-2xl font-bold">🔴 Real-Time Console</h2>
-          <p className="text-gray-600 text-sm mt-1">Live intrusion detection events</p>
+          <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><Terminal size={20} className="text-emerald-400" />Live Console</h1>
+          <p className="text-sm text-muted-foreground mt-0.5">{filtered.length} log entries • {isLive ? "streaming" : "paused"}</p>
         </div>
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2">
-            <div
-              className={`w-3 h-3 rounded-full ${
-                connected ? "bg-green-500 animate-pulse" : "bg-red-500"
-              }`}
-            ></div>
-            <span className="text-sm font-semibold">
-              {connected ? "Connected" : "Disconnected"}
-            </span>
-          </div>
-          <button
-            onClick={clearLogs}
-            className="bg-gray-600 text-white px-4 py-2 rounded hover:bg-gray-700 text-sm"
-          >
-            Clear
-          </button>
+        <div className="flex flex-wrap items-center gap-2">
+          {["ALL", "ALERT", "WARN", "INFO", "DEBUG"].map((level) => (
+            <Button key={level} variant={filter === level ? "default" : "secondary"} size="sm" className="text-[10px] h-7 px-2.5" onClick={() => setFilter(level)}>
+              {level}
+            </Button>
+          ))}
+          <div className="w-px h-5 bg-border mx-1" />
+          <Button variant="secondary" size="icon" className="h-7 w-7" onClick={() => setIsLive(!isLive)}>
+            {isLive ? <Pause size={12} /> : <Play size={12} />}
+          </Button>
+          <Button variant="secondary" size="icon" className="h-7 w-7" onClick={() => setLogs([])}>
+            <Trash2 size={12} />
+          </Button>
+          <Button variant="secondary" size="icon" className="h-7 w-7" onClick={handleExport}>
+            <Download size={12} />
+          </Button>
         </div>
       </div>
 
-      {/* Console Output */}
-      <div className="flex-1 bg-gray-900 text-green-400 p-4 rounded-lg font-mono text-sm overflow-y-auto border border-gray-700 shadow-lg">
-        {logs.length === 0 ? (
-          <div className="text-gray-500">
-            <p>Waiting for incoming detection events...</p>
-            <p className="text-xs mt-4">
-              {connected ? "✓ Connected to live stream" : "✗ Reconnecting..."}
-            </p>
+      <Card className="flex-1 min-h-0 overflow-hidden">
+        <div className="flex items-center gap-2 px-4 py-2 bg-card border-b border-border">
+          <div className="flex gap-1.5">
+            <div className="w-2.5 h-2.5 rounded-full bg-rose-400/80" />
+            <div className="w-2.5 h-2.5 rounded-full bg-amber-400/80" />
+            <div className="w-2.5 h-2.5 rounded-full bg-emerald-400/80" />
           </div>
-        ) : (
-          <div className="space-y-1">
-            {logs.map((log) => (
-              <div
-                key={`${log.id}-${log.timestamp}`}
-                className={`${
-                  log.prediction === "attack" ? "text-red-400" : "text-green-400"
-                }`}
-              >
-                <span className="text-gray-500">[{new Date(log.timestamp).toLocaleTimeString()}]</span>{" "}
-                <span className="font-bold">ID#{log.id}</span> →{" "}
-                <span className={log.prediction === "attack" ? "text-red-500 font-bold" : ""}>
-                  {log.prediction.toUpperCase()}
-                </span>
-              </div>
-            ))}
-            <div ref={logsEndRef} />
-          </div>
-        )}
-      </div>
-
-      {/* Stats */}
-      <div className="grid grid-cols-4 gap-4 mt-6">
-        <div className="bg-blue-100 p-3 rounded">
-          <p className="text-xs text-gray-600">Total</p>
-          <p className="text-xl font-bold text-blue-600">{logs.length}</p>
+          <span className="text-[10px] font-mono text-muted-foreground ml-2">ids-sentinel — real-time logs</span>
+          {isLive && <Circle size={6} className="ml-auto fill-emerald-400 text-emerald-400 animate-pulse" />}
         </div>
-        <div className="bg-red-100 p-3 rounded">
-          <p className="text-xs text-gray-600">Attacks</p>
-          <p className="text-xl font-bold text-red-600">
-            {logs.filter((l) => l.prediction === "attack").length}
-          </p>
+        <div ref={scrollRef} className="overflow-y-auto h-full p-4 font-mono text-xs space-y-0.5 bg-[#0a0f1a]" style={{ maxHeight: "calc(100vh - 280px)" }}>
+          {filtered.map((log, i) => (
+            <motion.div key={`${log.timestamp}-${i}`} initial={i === 0 ? { opacity: 0, x: -8 } : false} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.15 }}
+              className="flex gap-2 py-0.5 hover:bg-white/[0.02] px-1 rounded"
+            >
+              <span className="text-muted-foreground/50 flex-shrink-0 w-24">{log.timestamp}</span>
+              <span className={`flex-shrink-0 w-12 text-right font-bold ${LEVEL_STYLES[log.level] || "text-foreground"}`}>{log.level}</span>
+              <span className="text-cyan-400/50 flex-shrink-0 w-28">[{log.source}]</span>
+              <span className={`break-all ${log.level === "ALERT" ? "text-rose-300" : "text-foreground/80"}`}>{log.message}</span>
+            </motion.div>
+          ))}
+          {filtered.length === 0 && <div className="text-center text-muted-foreground py-8">No log entries</div>}
         </div>
-        <div className="bg-green-100 p-3 rounded">
-          <p className="text-xs text-gray-600">Normal</p>
-          <p className="text-xl font-bold text-green-600">
-            {logs.filter((l) => l.prediction === "normal").length}
-          </p>
-        </div>
-        <div className={`${connected ? "bg-green-100" : "bg-yellow-100"} p-3 rounded`}>
-          <p className="text-xs text-gray-600">Status</p>
-          <p className={`text-xl font-bold ${connected ? "text-green-600" : "text-yellow-600"}`}>
-            {connected ? "Live" : "Offline"}
-          </p>
-        </div>
-      </div>
+      </Card>
     </div>
   );
 }
-
-export default Console;

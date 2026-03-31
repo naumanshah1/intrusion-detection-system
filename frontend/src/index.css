@@ -1,3 +1,74 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500;600;700&display=swap');
+
+/* ─── Cyber-Dark Theme — always dark ───────────────────────────────────── */
+:root {
+  --radius: 0.5rem;
+  --background: #101827;
+  --foreground: #e2e5ec;
+  --card: #151d2e;
+  --card-foreground: #e2e5ec;
+  --popover: #151d2e;
+  --popover-foreground: #e2e5ec;
+  --primary: #10b981;
+  --primary-foreground: #101827;
+  --secondary: #1e293b;
+  --secondary-foreground: #cbd5e1;
+  --muted: #1a2234;
+  --muted-foreground: #64748b;
+  --accent: #1e2a3d;
+  --accent-foreground: #cbd5e1;
+  --destructive: #f43f5e;
+  --border: #2a3555;
+  --input: #1a2234;
+  --ring: #10b981;
+  --sidebar: #0d1420;
+  --sidebar-foreground: #e2e5ec;
+  --sidebar-primary: #10b981;
+  --sidebar-primary-foreground: #0d1420;
+  --sidebar-accent: #162032;
+  --sidebar-accent-foreground: #e2e5ec;
+  --sidebar-border: #1f2b42;
+  --sidebar-ring: #10b981;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "ss01", "ss02";
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+/* ─── Custom scrollbar ────────────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #151d2e;
+}
+::-webkit-scrollbar-thumb {
+  background: #2a3555;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(16, 185, 129, 0.6);
+}
+
+/* ─── Animations ──────────────────────────────────────────────────── */
+@keyframes pulse-glow {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 2s ease-in-out infinite;
+}

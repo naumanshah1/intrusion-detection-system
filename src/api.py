@@ -18,7 +18,7 @@ except ImportError:
 from src.preprocessing import load_data, preprocess_single
 from src.hybrid_model import hybrid_predict
 from src.thresholds import compute_thresholds
-from src.database import SessionLocal, Log, User, Alert, Rule, Notification, Config, AuditLog, APIKey, LoginHistory
+from src.database import SessionLocal, Log, User, Alert, Rule, Notification, Config, AuditLog, APIKey, LoginHistory, Incident, ModelVersion, KPI, ThreatScore, NotificationConfig, PipelineStatus, IncidentComment, Whitelist, generate_test_data
 from src.auth import hash_password, verify_password, create_token, decode_token
 from src.rules import apply_rules
 import secrets
@@ -79,6 +79,17 @@ def log_audit(user: str, action: str):
     db.commit()
     db.close()
 
+# ========== STARTUP EVENT ==========
+@app.on_event("startup")
+def startup_event():
+    """Initialize database with test data on app startup"""
+    print("\n🚀 IDS Sentinel API Starting...\n")
+    try:
+        generate_test_data()
+        print("✅ API Ready!\n")
+    except Exception as e:
+        print(f"⚠️ Startup warning: {str(e)}\n")
+
 
 def get_current_user(credentials = Depends(security)):
     """Extract and verify JWT token from request"""
@@ -104,6 +115,37 @@ def require_admin(user=Depends(get_current_user)):
     if user["role"] != "admin":
         raise HTTPException(status_code=403, detail="Admin privileges required")
     return user
+
+
+# ========== SOC INCIDENT GROUPING LOGIC ==========
+
+def auto_group_alert_to_incident(db, alert: Alert):
+    """Auto-group alert into incident based on source IP, attack type, and time window"""
+    from datetime import timedelta
+    
+    if not alert.source_ip:
+        return None
+    
+    # Look for matching incident created within 10 minutes
+    time_window = datetime.utcnow() - timedelta(minutes=10)
+    
+    # Use SQLite compatible contains with LIKE operator
+    matching_incident = db.query(Incident).filter(
+        Incident.source_ips.like(f"%{alert.source_ip}%"),
+        Incident.attack_type == alert.attack_category,
+        Incident.created_at >= time_window,
+        Incident.status.in_(["open", "investigating"])  # lowercase status
+    ).first()
+    
+    if matching_incident:
+        # Link alert to incident
+        alert.incident_id = matching_incident.id
+        alert.status = "linked"
+        matching_incident.updated_at = datetime.utcnow()
+        db.commit()
+        return matching_incident.id
+    
+    return None
 
 # -----------------------------
 # Auth Routes
@@ -164,6 +206,7 @@ def signup(user: dict):
 @app.post("/login")
 def login(credentials: dict):
     """Authenticate user and return JWT token"""
+    db = None
     try:
         db = SessionLocal()
         
@@ -195,13 +238,12 @@ def login(credentials: dict):
         db.close()
         return {"access_token": token, "token_type": "bearer", "role": db_user.role}
     except HTTPException:
-        if db is not None and 'db_user' in locals() and db_user:
-            db.add(LoginHistory(user_id=db_user.id if db_user else None, success="false"))
-            db.commit()
-            log_audit(credentials.get('username', 'unknown'), 'login_failed')
+        if db:
             db.close()
         raise
     except Exception as e:
+        if db:
+            db.close()
         print(f"Login error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
@@ -219,6 +261,23 @@ def test_db():
 @app.get("/")
 def home():
     return {"message": "IDS API Running 🚀"}
+
+@app.get("/test-data")
+def test_data():
+    """Quick test endpoint to verify data generation (no auth required)"""
+    db = SessionLocal()
+    alerts_count = db.query(Alert).count()
+    incidents_count = db.query(Incident).count()
+    users_count = db.query(User).count()
+    db.close()
+    
+    return {
+        "status": "ok",
+        "alerts": alerts_count,
+        "incidents": incidents_count,
+        "users": users_count,
+        "message": "Data generation complete" if alerts_count > 0 else "No data yet"
+    }
 
 @app.post("/predict")
 def predict(sample: dict, username: str = Depends(get_current_user)):
@@ -265,9 +324,46 @@ def predict(sample: dict, username: str = Depends(get_current_user)):
 
         # Create alert if attack detected
         if label == "attack":
-            alert = Alert(type="Intrusion Detected", severity="High")
+            source_ip = sample.get("src_ip", "unknown")
+            # Determine attack category from sample fields
+            attack_category = sample.get("protocol_type", "unknown")
+            if sample.get("dst_port") in [22, 23]:
+                attack_category = "R2L"
+            elif sample.get("src_bytes", 0) > 5000 or sample.get("dst_bytes", 0) > 5000:
+                attack_category = "DoS"
+            
+            severity = "critical" if sample.get("num_failed_logins", 0) > 5 else "high"
+            
+            alert = Alert(
+                type="Intrusion Detected",
+                severity=severity,
+                source_ip=source_ip,
+                attack_category=attack_category,
+                status="unlinked"
+            )
             db.add(alert)
-            db.add(Notification(message=f"Attack detected from flow triggered by {username['username']}", status="unread"))
+            db.flush()  # Get alert ID
+            
+            # Auto-group into incident
+            incident_id = auto_group_alert_to_incident(db, alert)
+            
+            if not incident_id:
+                # Create new incident if no match found
+                incident = Incident(
+                    title=f"Attack from {source_ip}",
+                    description=f"Attack type: {attack_category}",
+                    severity=severity,
+                    source_ips=source_ip,
+                    attack_type=attack_category,
+                    status="open",  # lowercase
+                    alert_count=1
+                )
+                db.add(incident)
+                db.flush()
+                alert.incident_id = incident.id
+                alert.status = "linked"
+            
+            db.add(Notification(message=f"Attack detected from {source_ip}", status="unread"))
 
         # Audit event for prediction
         log_audit(username['username'], f"predict:{label}")
@@ -286,13 +382,44 @@ def predict(sample: dict, username: str = Depends(get_current_user)):
         }
 
 @app.get("/alerts")
-def get_alerts(username: str = Depends(get_current_user)):
-    """Get all alerts (protected route)"""
+def get_alerts(username: str = Depends(get_current_user), status: str = None, severity: str = None, linked: str = None):
+    """Get alerts with filtering (protected route)"""
     db = SessionLocal()
-    alerts = db.query(Alert).order_by(Alert.timestamp.desc()).all()
+    
+    query = db.query(Alert).order_by(Alert.timestamp.desc())
+    
+    # Filter by linked status
+    if linked == "linked":
+        query = query.filter(Alert.incident_id != None)
+    elif linked == "unlinked":
+        query = query.filter(Alert.incident_id == None)
+    
+    # Filter by severity
+    if severity:
+        query = query.filter(Alert.severity == severity)
+    
+    # Filter by status
+    if status:
+        query = query.filter(Alert.status == status)
+    
+    alerts = query.limit(500).all()
     db.close()
     
-    return [{"id": a.id, "type": a.type, "severity": a.severity, "timestamp": a.timestamp.isoformat()} for a in alerts]
+    alerts_list = [
+        {
+            "id": str(a.id),  # Convert to string for consistency
+            "type": a.type,
+            "severity": a.severity,
+            "source_ip": a.source_ip,
+            "attack_category": a.attack_category,
+            "status": a.status,
+            "incident_id": a.incident_id,
+            "timestamp": a.timestamp.isoformat()
+        }
+        for a in alerts
+    ]
+    
+    return {"alerts": alerts_list}
 
 @app.get("/logs")
 def get_logs(username: str = Depends(get_current_user)):
@@ -616,3 +743,530 @@ async def websocket_endpoint(ws: WebSocket):
     finally:
         active_connections.remove(ws)
         db.close()
+
+
+# ========== FEATURE 1: INCIDENTS (Group Alerts) ==========
+
+@app.post("/incidents")
+def create_incident(payload: dict, user=Depends(get_current_user)):
+    db = SessionLocal()
+    incident = Incident(
+        title=payload.get("title"),
+        description=payload.get("description"),
+        severity=payload.get("severity", "medium").lower(),
+        source_ips=payload.get("source_ips"),
+        attack_type=payload.get("attack_type"),
+        status="open",  # Default status
+        assigned_to=user.get('id'),
+        alert_count=1
+    )
+    db.add(incident)
+    db.commit()
+    
+    # Link any unlinked alerts with same IP/type
+    source_ip = payload.get("source_ips")
+    attack_type = payload.get("attack_type")
+    if source_ip and attack_type:
+        unlinked_alerts = db.query(Alert).filter(
+            Alert.source_ip == source_ip,
+            Alert.attack_category == attack_type,
+            Alert.incident_id == None
+        ).all()
+        for alert in unlinked_alerts:
+            alert.incident_id = incident.id
+            alert.status = "linked"
+            incident.alert_count += 1
+        db.commit()
+    
+    db.close()
+    log_audit(user['username'], f"create_incident:{incident.id}")
+    return {"id": incident.id, "status": incident.status, "message": "Incident created"}
+
+@app.get("/incidents")
+def get_incidents(user=Depends(get_current_user)):
+    db = SessionLocal()
+    incidents = db.query(Incident).order_by(Incident.created_at.desc()).all()
+    db.close()
+    
+    # Calculate duration
+    return [
+        {
+            "id": str(i.id),
+            "title": i.title,
+            "status": i.status,
+            "severity": i.severity,
+            "source_ips": i.source_ips,
+            "attack_type": i.attack_type,
+            "alert_count": i.alert_count,
+            "assigned_to": i.assigned_to,
+            "created_at": i.created_at.isoformat(),
+            "updated_at": i.updated_at.isoformat(),
+            "duration_minutes": int((i.updated_at - i.created_at).total_seconds() / 60)
+        }
+        for i in incidents
+    ]
+
+@app.get("/incidents/{incident_id}")
+def get_incident_details(incident_id: int, user=Depends(get_current_user)):
+    db = SessionLocal()
+    incident = db.query(Incident).filter(Incident.id == incident_id).first()
+    if not incident:
+        db.close()
+        raise HTTPException(status_code=404, detail="Incident not found")
+    
+    # Get linked alerts
+    alerts = db.query(Alert).filter(Alert.incident_id == incident_id).order_by(Alert.timestamp.desc()).all()
+    
+    # Get comments
+    comments = db.query(IncidentComment).filter(IncidentComment.incident_id == incident_id).order_by(IncidentComment.created_at.desc()).all()
+    
+    db.close()
+    
+    return {
+        "id": str(incident.id),
+        "title": incident.title,
+        "description": incident.description,
+        "status": incident.status,
+        "severity": incident.severity,
+        "source_ips": incident.source_ips,
+        "attack_type": incident.attack_type,
+        "alert_count": incident.alert_count,
+        "assigned_to": incident.assigned_to,
+        "notes": incident.notes,
+        "created_at": incident.created_at.isoformat(),
+        "updated_at": incident.updated_at.isoformat(),
+        "duration_minutes": int((incident.updated_at - incident.created_at).total_seconds() / 60),
+        "linked_alerts": [
+            {
+                "id": str(a.id),
+                "type": a.type,
+                "severity": a.severity.lower(),
+                "source_ip": a.source_ip,
+                "attack_category": a.attack_category,
+                "timestamp": a.timestamp.isoformat()
+            }
+            for a in alerts
+        ],
+        "comments": [
+            {
+                "id": c.id,
+                "created_by": c.analyst,  # Map analyst → created_by
+                "content": c.comment,     # Map comment → content
+                "created_at": c.created_at.isoformat()
+            }
+            for c in comments
+        ]
+    }
+
+@app.put("/incidents/{incident_id}")
+def update_incident(incident_id: int, payload: dict, user=Depends(get_current_user)):
+    db = SessionLocal()
+    incident = db.query(Incident).filter(Incident.id == incident_id).first()
+    if not incident:
+        db.close()
+        raise HTTPException(status_code=404, detail="Incident not found")
+    
+    incident.status = payload.get("status", incident.status)
+    incident.severity = payload.get("severity", incident.severity)
+    incident.assigned_to = payload.get("assigned_to", incident.assigned_to)
+    incident.notes = payload.get("notes", incident.notes)
+    incident.updated_at = datetime.utcnow()
+    
+    db.commit()
+    db.close()
+    
+    log_audit(user['username'], f"update_incident:{incident_id}:status={incident.status}")
+    return {"message": "Incident updated", "status": incident.status}
+
+@app.post("/incidents/{incident_id}/comments")
+def add_incident_comment(incident_id: int, payload: dict, user=Depends(get_current_user)):
+    db = SessionLocal()
+    incident = db.query(Incident).filter(Incident.id == incident_id).first()
+    if not incident:
+        db.close()
+        raise HTTPException(status_code=404, detail="Incident not found")
+    
+    comment = IncidentComment(
+        incident_id=incident_id,
+        analyst=user['username'],  # Stores analyst username
+        comment=payload.get("content")  # Frontend sends 'content'
+    )
+    db.add(comment)
+    incident.updated_at = datetime.utcnow()
+    db.commit()
+    db.close()
+    
+    log_audit(user['username'], f"add_comment:{incident_id}")
+    return {"id": comment.id, "message": "Comment added"}
+
+@app.post("/incidents/{incident_id}/block-ip")
+def block_incident_source_ip(incident_id: int, user=Depends(require_admin)):
+    db = SessionLocal()
+    incident = db.query(Incident).filter(Incident.id == incident_id).first()
+    if not incident:
+        db.close()
+        raise HTTPException(status_code=404, detail="Incident not found")
+    
+    # Create rule to block source IP
+    source_ip = incident.source_ips.split(",")[0] if incident.source_ips else None
+    if source_ip:
+        rule = Rule(
+            field="src_ip",
+            operator="==",
+            value=source_ip,
+            priority=100,
+            automation="auto"
+        )
+        db.add(rule)
+        db.commit()
+        log_audit(user['username'], f"block_ip:{source_ip}:incident={incident_id}")
+        db.close()
+        return {"message": f"IP {source_ip} blocked", "rule_id": rule.id}
+    
+    db.close()
+    raise HTTPException(status_code=400, detail="No source IP found")
+
+@app.post("/incidents/{incident_id}/whitelist-ip")
+def whitelist_incident_source_ip(incident_id: int, user=Depends(require_admin)):
+    db = SessionLocal()
+    incident = db.query(Incident).filter(Incident.id == incident_id).first()
+    if not incident:
+        db.close()
+        raise HTTPException(status_code=404, detail="Incident not found")
+    
+    source_ip = incident.source_ips.split(",")[0] if incident.source_ips else None
+    if source_ip:
+        whitelist = Whitelist(
+            ip_address=source_ip,
+            reason=f"Whitelisted from incident {incident_id}",
+            created_by=user['username']
+        )
+        db.add(whitelist)
+        db.commit()
+        log_audit(user['username'], f"whitelist_ip:{source_ip}:incident={incident_id}")
+        db.close()
+        return {"message": f"IP {source_ip} whitelisted"}
+    
+    db.close()
+    raise HTTPException(status_code=400, detail="No source IP found")
+
+@app.post("/alerts/{alert_id}/link-incident")
+def link_alert_to_incident(alert_id: int, payload: dict, user=Depends(get_current_user)):
+    db = SessionLocal()
+    alert = db.query(Alert).filter(Alert.id == alert_id).first()
+    if not alert:
+        db.close()
+        raise HTTPException(status_code=404, detail="Alert not found")
+    
+    incident_id = payload.get("incident_id")
+    incident = db.query(Incident).filter(Incident.id == incident_id).first()
+    if not incident:
+        db.close()
+        raise HTTPException(status_code=404, detail="Incident not found")
+    
+    alert.incident_id = incident_id
+    alert.status = "linked"
+    incident.alert_count += 1
+    db.commit()
+    db.close()
+    
+    log_audit(user['username'], f"link_alert:{alert_id}:to_incident={incident_id}")
+    return {"message": "Alert linked to incident"}
+
+@app.get("/whitelist")
+def get_whitelist(user=Depends(get_current_user)):
+    db = SessionLocal()
+    whitelist = db.query(Whitelist).order_by(Whitelist.created_at.desc()).all()
+    db.close()
+    
+    return [
+        {
+            "id": w.id,
+            "ip_address": w.ip_address,
+            "reason": w.reason,
+            "created_by": w.created_by,
+            "created_at": w.created_at.isoformat()
+        }
+        for w in whitelist
+    ]
+
+@app.delete("/whitelist/{whitelist_id}")
+def remove_whitelist(whitelist_id: int, user=Depends(require_admin)):
+    db = SessionLocal()
+    whitelist = db.query(Whitelist).filter(Whitelist.id == whitelist_id).first()
+    if not whitelist:
+        db.close()
+        raise HTTPException(status_code=404, detail="Whitelist entry not found")
+    
+    ip = whitelist.ip_address
+    db.delete(whitelist)
+    db.commit()
+    db.close()
+    
+    log_audit(user['username'], f"remove_whitelist:{ip}")
+    return {"message": "Whitelist entry removed"}
+
+
+# ========== FEATURE 3: MLOps - Model Management ==========
+
+@app.post("/models/version")
+def create_model_version(payload: dict, user=Depends(require_admin)):
+    db = SessionLocal()
+    version = ModelVersion(
+        name=payload.get("name"),
+        version=payload.get("version"),
+        accuracy=payload.get("accuracy"),
+        trained_date=datetime.utcnow(),
+        dataset_size=payload.get("dataset_size", 0)
+    )
+    db.add(version)
+    db.commit()
+    db.close()
+    log_audit(user['username'], f"create_model_version:{version.id}")
+    return {"id": version.id, "message": "Model version created"}
+
+@app.get("/models/versions")
+def get_model_versions(user=Depends(get_current_user)):
+    db = SessionLocal()
+    versions = db.query(ModelVersion).order_by(ModelVersion.created_at.desc()).all()
+    db.close()
+    return [
+        {
+            "id": v.id,
+            "name": v.name,
+            "version": v.version,
+            "accuracy": v.accuracy,
+            "deployed": v.deployed,
+            "drift_detected": v.drift_detected,
+            "trained_date": v.trained_date.isoformat() if v.trained_date else None
+        }
+        for v in versions
+    ]
+
+@app.post("/models/deploy/{version_id}")
+def deploy_model(version_id: int, user=Depends(require_admin)):
+    db = SessionLocal()
+    version = db.query(ModelVersion).filter(ModelVersion.id == version_id).first()
+    if not version:
+        db.close()
+        raise HTTPException(status_code=404, detail="Model version not found")
+    version.deployed = "true"
+    db.commit()
+    db.close()
+    log_audit(user['username'], f"deploy_model:{version_id}")
+    return {"message": f"Model {version.version} deployed"}
+
+@app.post("/models/rollback/{version_id}")
+def rollback_model(version_id: int, user=Depends(require_admin)):
+    db = SessionLocal()
+    version = db.query(ModelVersion).filter(ModelVersion.id == version_id).first()
+    if not version:
+        db.close()
+        raise HTTPException(status_code=404, detail="Model version not found")
+    version.deployed = "true"
+    # Mark all others as not deployed
+    db.query(ModelVersion).filter(ModelVersion.id != version_id).update({"deployed": "false"})
+    db.commit()
+    db.close()
+    log_audit(user['username'], f"rollback_model:{version_id}")
+    return {"message": f"Rolled back to {version.version}"}
+
+
+# ========== FEATURE 4: Analytics KPIs ==========
+
+@app.get("/kpis")
+def get_kpis(user=Depends(get_current_user)):
+    db = SessionLocal()
+    total = db.query(Log).count()
+    attacks = db.query(Log).filter(Log.prediction == "attack").count()
+    
+    dr = (attacks / total * 100) if total > 0 else 0
+    fpr = 5.2  # simulated
+    
+    db.close()
+    return {
+        "detection_rate": f"{dr:.1f}%",
+        "false_positive_rate": f"{fpr:.1f}%",
+        "total_logs": total,
+        "attacks_detected": attacks,
+        "trend": "DoS attacks increased 23% this week"
+    }
+
+
+# ========== FEATURE 5: Intelligence - Threat Scores ==========
+
+@app.post("/threat-scores")
+def add_threat_score(payload: dict, user=Depends(require_admin)):
+    db = SessionLocal()
+    score = ThreatScore(
+        ip_address=payload.get("ip_address"),
+        score=payload.get("score"),
+        label=payload.get("label"),
+        enrichment=payload.get("enrichment")
+    )
+    db.add(score)
+    db.commit()
+    db.close()
+    return {"id": score.id, "message": "Threat score added"}
+
+@app.get("/threat-scores")
+def get_threat_scores(user=Depends(get_current_user)):
+    db = SessionLocal()
+    scores = db.query(ThreatScore).all()
+    db.close()
+    return [
+        {
+            "id": s.id,
+            "ip_address": s.ip_address,
+            "score": s.score,
+            "label": s.label,
+            "enrichment": s.enrichment
+        }
+        for s in scores
+    ]
+
+@app.post("/block-ip")
+def block_ip(payload: dict, user=Depends(require_admin)):
+    db = SessionLocal()
+    ip = payload.get("ip_address")
+    rule = Rule(field="src_ip", operator="==", value=ip, priority=100, automation="auto")
+    db.add(rule)
+    db.commit()
+    db.close()
+    log_audit(user['username'], f"block_ip:{ip}")
+    return {"message": f"IP {ip} blocked via rule"}
+
+
+# ========== FEATURE 6: Auto-Rules & Simulation ==========
+
+@app.post("/rules/auto")
+def create_auto_rule(payload: dict, user=Depends(require_admin)):
+    db = SessionLocal()
+    rule = Rule(
+        field=payload.get("field"),
+        operator=payload.get("operator"),
+        value=payload.get("value"),
+        priority=payload.get("priority", 50),
+        automation="auto"
+    )
+    db.add(rule)
+    db.commit()
+    db.close()
+    log_audit(user['username'], f"create_auto_rule:{rule.id}")
+    return {"id": rule.id, "message": "Auto-rule created"}
+
+@app.post("/rules/simulate/{rule_id}")
+def simulate_rule(rule_id: int, user=Depends(get_current_user)):
+    db = SessionLocal()
+    rule = db.query(Rule).filter(Rule.id == rule_id).first()
+    if not rule:
+        db.close()
+        raise HTTPException(status_code=404, detail="Rule not found")
+    
+    logs = db.query(Log).all()
+    blocked_count = 0
+    for log in logs:
+        if apply_rules({"field": rule.field, "value": log.prediction}, [rule]) == 1:
+            blocked_count += 1
+    
+    rule.simulated_blocks = blocked_count
+    db.commit()
+    db.close()
+    return {"rule_id": rule_id, "simulated_blocks": blocked_count}
+
+
+# ========== FEATURE 10: Notifications ==========
+
+@app.post("/notification-config")
+def create_notification_config(payload: dict, user=Depends(get_current_user)):
+    db = SessionLocal()
+    config = NotificationConfig(
+        user_id=user['id'],
+        channel=payload.get("channel"),
+        threshold=payload.get("threshold"),
+        enabled=payload.get("enabled", "true")
+    )
+    db.add(config)
+    db.commit()
+    db.close()
+    return {"id": config.id, "message": "Notification config created"}
+
+@app.get("/notification-config")
+def get_notification_config(user=Depends(get_current_user)):
+    db = SessionLocal()
+    configs = db.query(NotificationConfig).filter(NotificationConfig.user_id == user['id']).all()
+    db.close()
+    return [
+        {
+            "id": c.id,
+            "channel": c.channel,
+            "threshold": c.threshold,
+            "enabled": c.enabled
+        }
+        for c in configs
+    ]
+
+
+# ========== FEATURE 11: Pipeline Status ==========
+
+@app.get("/pipeline/status")
+def get_pipeline_status(user=Depends(get_current_user)):
+    db = SessionLocal()
+    
+    # Initialize if empty
+    if db.query(PipelineStatus).count() == 0:
+        for component in ["kafka", "processor", "database"]:
+            ps = PipelineStatus(
+                component=component,
+                status="healthy",
+                packets_per_sec=1250,
+                latency_ms=45
+            )
+            db.add(ps)
+        db.commit()
+    
+    statuses = db.query(PipelineStatus).all()
+    db.close()
+    return [
+        {
+            "component": s.component,
+            "status": s.status,
+            "packets_per_sec": s.packets_per_sec,
+            "latency_ms": s.latency_ms,
+            "last_update": s.last_update.isoformat()
+        }
+        for s in statuses
+    ]
+
+@app.post("/pipeline/update")
+def update_pipeline_status(payload: dict, user=Depends(require_admin)):
+    db = SessionLocal()
+    component = payload.get("component")
+    status = db.query(PipelineStatus).filter(PipelineStatus.component == component).first()
+    if status:
+        status.status = payload.get("status", status.status)
+        status.packets_per_sec = payload.get("packets_per_sec", status.packets_per_sec)
+        status.latency_ms = payload.get("latency_ms", status.latency_ms)
+        status.last_update = datetime.utcnow()
+        db.commit()
+    db.close()
+    return {"message": f"Pipeline {component} updated"}
+
+
+# ========== FEATURE 12: Display Audit Logs (Enhanced) ==========
+
+@app.get("/audit-logs/detailed")
+def get_detailed_audit_logs(user=Depends(require_admin), limit: int = 200):
+    db = SessionLocal()
+    logs = db.query(AuditLog).order_by(AuditLog.timestamp.desc()).limit(limit).all()
+    db.close()
+    return [
+        {
+            "id": l.id,
+            "user": l.user,
+            "action": l.action,
+            "timestamp": l.timestamp.isoformat(),
+            "action_type": l.action.split(":")[0] if ":" in l.action else l.action
+        }
+        for l in logs
+    ]

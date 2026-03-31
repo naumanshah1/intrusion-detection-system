@@ -1,133 +1,91 @@
-import { useEffect, useState } from "react";
-import { api } from "../config";
+import React, { useState } from "react";
+import { motion } from "motion/react";
+import { ShieldCheck, Plus, Pencil, Trash2, Circle, Power } from "lucide-react";
+import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
+import { Badge } from "../components/ui/badge";
+import { Button } from "../components/ui/button";
+import { MOCK_RULES } from "../lib/ids-data";
 
-function Rules() {
-  const [rules, setRules] = useState([]);
-  const [field, setField] = useState("");
-  const [operator, setOperator] = useState(">");
-  const [value, setValue] = useState("");
-  const [loading, setLoading] = useState(false);
+const TYPE_STYLES = { block: "text-rose-400 bg-rose-400/10 border-rose-400/30", allow: "text-emerald-400 bg-emerald-400/10 border-emerald-400/30", whitelist: "text-cyan-400 bg-cyan-400/10 border-cyan-400/30" };
 
-  useEffect(() => {
-    fetchRules();
-  }, []);
+export default function Rules() {
+  const [rules, setRules] = useState(MOCK_RULES);
 
-  const fetchRules = async () => {
-    try {
-      const res = await api.get("/rules");
-      setRules(res.data);
-    } catch (error) {
-      console.error("Error fetching rules:", error);
-    }
-  };
+  const toggleRule = (id) => setRules((prev) => prev.map((r) => (r.id === id ? { ...r, enabled: !r.enabled } : r)));
+  const deleteRule = (id) => setRules((prev) => prev.filter((r) => r.id !== id));
 
-  const handleAddRule = async (e) => {
-    e.preventDefault();
-    if (!field || !value) {
-      alert("Please fill in all fields");
-      return;
-    }
-
-    try {
-      setLoading(true);
-      await api.post("/add-rule", {}, {
-        params: { field, operator, value }
-      });
-      setField("");
-      setValue("");
-      fetchRules();
-    } catch (error) {
-      console.error("Error adding rule:", error);
-      alert("Failed to add rule");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleDeleteRule = async (ruleId) => {
-    if (!window.confirm("Delete this rule?")) return;
-
-    try {
-      await api.delete(`/delete-rule/${ruleId}`);
-      fetchRules();
-    } catch (error) {
-      console.error("Error deleting rule:", error);
-      alert("Failed to delete rule");
-    }
-  };
+  const stats = { total: rules.length, active: rules.filter((r) => r.enabled).length, block: rules.filter((r) => r.type === "block").length, totalHits: rules.reduce((s, r) => s + r.hits, 0) };
 
   return (
-    <div className="p-6">
-      <h2 className="text-2xl font-bold mb-6">⚙️ Rules Engine</h2>
-
-      {/* Add Rule Form */}
-      <div className="bg-white p-6 rounded-lg shadow mb-6">
-        <h3 className="text-lg font-semibold mb-4">Create Custom Rule</h3>
-        <form onSubmit={handleAddRule} className="space-y-4">
-          <div className="grid grid-cols-3 gap-4">
-            <input
-              type="text"
-              placeholder="Field (e.g. src_bytes)"
-              value={field}
-              onChange={(e) => setField(e.target.value)}
-              className="border border-gray-300 p-2 rounded"
-            />
-            <select
-              value={operator}
-              onChange={(e) => setOperator(e.target.value)}
-              className="border border-gray-300 p-2 rounded"
-            >
-              <option value=">">&gt;</option>
-              <option value="<">&lt;</option>
-              <option value="==">=</option>
-              <option value="!=">≠</option>
-              <option value=">=">&gt;=</option>
-              <option value="<=">&lt;=</option>
-            </select>
-            <input
-              type="text"
-              placeholder="Value"
-              value={value}
-              onChange={(e) => setValue(e.target.value)}
-              className="border border-gray-300 p-2 rounded"
-            />
-          </div>
-          <button
-            type="submit"
-            disabled={loading}
-            className="bg-blue-600 text-white px-6 py-2 rounded hover:bg-blue-700 disabled:opacity-50"
-          >
-            {loading ? "Adding..." : "Add Rule"}
-          </button>
-        </form>
+    <div className="p-4 md:p-6 space-y-5">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><ShieldCheck size={20} className="text-primary" />Firewall Rules</h1>
+          <p className="text-sm text-muted-foreground mt-0.5">Manage detection and response rules</p>
+        </div>
+        <Button size="sm"><Plus size={14} className="mr-1" />Add Rule</Button>
       </div>
 
-      {/* Rules List */}
-      <div className="bg-white p-6 rounded-lg shadow">
-        <h3 className="text-lg font-semibold mb-4">Active Rules ({rules.length})</h3>
-        {rules.length === 0 ? (
-          <p className="text-gray-500">No rules yet. Create one above.</p>
-        ) : (
-          <div className="space-y-2">
-            {rules.map((rule) => (
-              <div key={rule.id} className="flex items-center justify-between bg-gray-50 p-4 rounded">
-                <code className="text-sm">
-                  IF <span className="font-semibold">{rule.field}</span> {rule.operator}{" "}
-                  <span className="font-semibold">{rule.value}</span> → ATTACK
-                </code>
-                <button
-                  onClick={() => handleDeleteRule(rule.id)}
-                  className="bg-red-600 text-white px-3 py-1 rounded text-sm hover:bg-red-700"
-                >
-                  Delete
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        {[
+          { label: "Total Rules", value: stats.total },
+          { label: "Active", value: stats.active, color: "text-emerald-400" },
+          { label: "Block Rules", value: stats.block, color: "text-rose-400" },
+          { label: "Total Hits", value: stats.totalHits.toLocaleString() },
+        ].map((s) => (
+          <Card key={s.label} className="text-center py-3">
+            <div className={`text-2xl font-bold font-mono ${s.color || "text-foreground"}`}>{s.value}</div>
+            <div className="text-xs text-muted-foreground mt-0.5">{s.label}</div>
+          </Card>
+        ))}
       </div>
+
+      <Card>
+        <CardContent className="p-0">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border">
+                  {["Status", "ID", "Name", "Type", "Source IP", "Protocol", "Port", "Hits", "Actions"].map((h) => (
+                    <th key={h} className="px-4 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rules.map((rule, i) => (
+                  <motion.tr key={rule.id} initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.04 }}
+                    className={`border-b border-border/50 hover:bg-accent/30 transition-colors ${!rule.enabled ? "opacity-50" : ""}`}
+                  >
+                    <td className="px-4 py-3">
+                      <button onClick={() => toggleRule(rule.id)} title={rule.enabled ? "Disable" : "Enable"}>
+                        <Circle size={8} className={rule.enabled ? "fill-emerald-400 text-emerald-400" : "fill-muted-foreground text-muted-foreground"} />
+                      </button>
+                    </td>
+                    <td className="px-4 py-3 font-mono text-xs text-muted-foreground">{rule.id}</td>
+                    <td className="px-4 py-3">
+                      <div>
+                        <div className="font-medium text-xs">{rule.name}</div>
+                        <div className="text-[10px] text-muted-foreground mt-0.5">{rule.description}</div>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3"><Badge className={`text-[10px] uppercase ${TYPE_STYLES[rule.type]}`}>{rule.type}</Badge></td>
+                    <td className="px-4 py-3 font-mono text-xs text-muted-foreground">{rule.src_ip || "any"}</td>
+                    <td className="px-4 py-3 font-mono text-xs text-muted-foreground">{rule.protocol || "any"}</td>
+                    <td className="px-4 py-3 font-mono text-xs text-muted-foreground">{rule.port || "any"}</td>
+                    <td className="px-4 py-3 font-mono text-xs font-medium">{rule.hits.toLocaleString()}</td>
+                    <td className="px-4 py-3">
+                      <div className="flex gap-1">
+                        <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => toggleRule(rule.id)}><Power size={11} /></Button>
+                        <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive" onClick={() => deleteRule(rule.id)}><Trash2 size={11} /></Button>
+                      </div>
+                    </td>
+                  </motion.tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }
-
-export default Rules;

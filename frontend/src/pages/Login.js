@@ -1,128 +1,93 @@
-import { useState } from "react";
-import axios from "axios";
+import React, { useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { motion } from "motion/react";
+import { Shield, Eye, EyeOff, Loader2 } from "lucide-react";
+import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
 import API_URL from "../config";
 
-function Login({ setToken, setUser }) {
-  const [credentials, setCredentials] = useState({ username: "", password: "" });
+export default function Login() {
+  const navigate = useNavigate();
   const [isLogin, setIsLogin] = useState(true);
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPass, setShowPass] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  const handleChange = (e) => {
-    setCredentials({ ...credentials, [e.target.name]: e.target.value });
-  };
-
-  const handleSubmit = async () => {
-    if (!credentials.username || !credentials.password) {
-      setError("Please fill in all fields");
-      return;
-    }
-
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    setError("");
     try {
-      setLoading(true);
-      setError("");
-
       const endpoint = isLogin ? "/login" : "/signup";
-      const res = await axios.post(`${API_URL}${endpoint}`, credentials);
+      const body = JSON.stringify({ username, password });
+      const headers = { "Content-Type": "application/json" };
 
-      if (res.data.access_token) {
-        setToken(res.data.access_token);
-        localStorage.setItem("token", res.data.access_token);
-        const role = res.data.role || "user";
-        const loggedUser = { username: credentials.username, role };
-        setUser(loggedUser);
-        localStorage.setItem("user", JSON.stringify(loggedUser));
-      } else if (res.data.message) {
-        // Signup successful, auto login
-        const loginRes = await axios.post(`${API_URL}/login`, credentials);
-        setToken(loginRes.data.access_token);
-        localStorage.setItem("token", loginRes.data.access_token);
-        const role = loginRes.data.role || "user";
-        const loggedUser = { username: credentials.username, role };
-        setUser(loggedUser);
-        localStorage.setItem("user", JSON.stringify(loggedUser));
+      const res = await fetch(`${API_URL}${endpoint}`, { method: "POST", headers, body });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Authentication failed");
+
+      if (isLogin) {
+        localStorage.setItem("token", data.access_token);
+        localStorage.setItem("user", JSON.stringify({ username, role: data.role || "user" }));
+        navigate("/dashboard");
+      } else {
+        setIsLogin(true);
+        setError("");
+        alert("Account created! Please sign in.");
       }
     } catch (err) {
-      setError(err.response?.data?.detail || "Authentication failed");
+      setError(err.message);
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-900 to-gray-800 flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-8">
-        {/* Header */}
+    <div className="min-h-screen bg-background flex flex-col items-center justify-center px-4 relative overflow-hidden">
+      <div className="absolute inset-0 opacity-[0.03]" style={{ backgroundImage: "linear-gradient(rgba(16,185,129,0.8) 1px, transparent 1px), linear-gradient(90deg, rgba(16,185,129,0.8) 1px, transparent 1px)", backgroundSize: "40px 40px" }} />
+      <div className="absolute top-1/4 left-1/3 w-80 h-80 bg-primary/10 rounded-full blur-3xl pointer-events-none" />
+
+      <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5 }} className="relative z-10 w-full max-w-sm">
         <div className="text-center mb-8">
-          <h1 className="text-4xl font-bold text-blue-600 mb-2">🚨 IDS SaaS</h1>
-          <p className="text-gray-600">{isLogin ? "Welcome Back" : "Create Account"}</p>
-        </div>
-
-        {/* Form */}
-        <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Username
-            </label>
-            <input
-              type="text"
-              name="username"
-              value={credentials.username}
-              onChange={handleChange}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 transition"
-              placeholder="Enter username"
-              disabled={loading}
-            />
+          <div className="mx-auto w-12 h-12 rounded-xl bg-primary/15 border border-primary/25 flex items-center justify-center mb-4">
+            <Shield size={22} className="text-primary" />
           </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Password
-            </label>
-            <input
-              type="password"
-              name="password"
-              value={credentials.password}
-              onChange={handleChange}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 transition"
-              placeholder="Enter password"
-              disabled={loading}
-            />
-          </div>
-
-          {error && (
-            <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg">
-              {error}
-            </div>
-          )}
-
-          <button
-            onClick={handleSubmit}
-            disabled={loading}
-            className="w-full bg-blue-600 text-white font-semibold py-3 rounded-lg hover:bg-blue-700 transition disabled:opacity-50 mt-6"
-          >
-            {loading ? "⏳ Processing..." : isLogin ? "Login" : "Sign Up"}
-          </button>
-        </div>
-
-        {/* Toggle */}
-        <div className="mt-6 text-center">
-          <p className="text-gray-600 text-sm">
-            {isLogin ? "Don't have an account? " : "Already have an account? "}
-            <button
-              onClick={() => {
-                setIsLogin(!isLogin);
-                setError("");
-              }}
-              className="text-blue-600 font-semibold hover:underline"
-            >
-              {isLogin ? "Sign Up" : "Login"}
-            </button>
+          <h1 className="text-2xl font-bold tracking-tight">IDS Sentinel</h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            {isLogin ? "Sign in to your security dashboard" : "Create a new analyst account"}
           </p>
         </div>
-      </div>
+
+        <form onSubmit={handleSubmit} className="space-y-4 p-6 rounded-xl border border-border bg-card/80 backdrop-blur-sm">
+          <div>
+            <label className="text-xs font-medium text-muted-foreground mb-1.5 block">Username</label>
+            <Input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="Enter username" autoFocus required />
+          </div>
+          <div>
+            <label className="text-xs font-medium text-muted-foreground mb-1.5 block">Password</label>
+            <div className="relative">
+              <Input type={showPass ? "text" : "password"} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" required />
+              <button type="button" onClick={() => setShowPass(!showPass)} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+                {showPass ? <EyeOff size={14} /> : <Eye size={14} />}
+              </button>
+            </div>
+          </div>
+          {error && <p className="text-xs text-destructive font-medium">{error}</p>}
+          <Button type="submit" className="w-full" disabled={loading}>
+            {loading ? <Loader2 size={14} className="animate-spin mr-2" /> : null}
+            {isLogin ? "Sign In" : "Create Account"}
+          </Button>
+        </form>
+
+        <p className="text-center text-xs text-muted-foreground mt-5">
+          {isLogin ? "Don't have an account? " : "Already have an account? "}
+          <button onClick={() => { setIsLogin(!isLogin); setError(""); }} className="text-primary hover:underline font-medium">
+            {isLogin ? "Register" : "Sign In"}
+          </button>
+        </p>
+      </motion.div>
     </div>
   );
 }
-
-export default Login;
