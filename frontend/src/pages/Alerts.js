@@ -1,15 +1,14 @@
-import React, { useState, useMemo, useEffect } from "react";
+import React, { useState, useMemo, useEffect, useCallback } from "react";
 import { Link } from "react-router-dom";
 import { motion } from "motion/react";
-import { AlertTriangle, Search, Filter, ChevronRight, Circle, Clock, Eye, Link2, Plus, RefreshCw } from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
+import { AlertTriangle, Search, Eye, Link2, Plus, RefreshCw } from "lucide-react";
+import { Card, CardContent, CardHeader } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "../components/ui/select";
-import { api } from "../config";
+import API_URL, { api } from "../config";
 
-const STATUS_LABELS = { unlinked: "Unlinked", linked: "Linked", acknowledged: "Acknowledged", false_positive: "False Positive" };
 const SEVERITY_COLORS = { critical: "bg-rose-500/20 text-rose-400", high: "bg-orange-500/20 text-orange-400", medium: "bg-amber-500/20 text-amber-400", low: "bg-cyan-500/20 text-cyan-400" };
 const CATEGORY_COLORS = { DoS: "bg-red-500/20 text-red-400", Probe: "bg-yellow-500/20 text-yellow-400", R2L: "bg-purple-500/20 text-purple-400", U2R: "bg-pink-500/20 text-pink-400" };
 
@@ -25,7 +24,7 @@ export default function Alerts() {
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [creatingIncident, setCreatingIncident] = useState(null);
 
-  const fetchAlerts = async () => {
+  const fetchAlerts = useCallback(async () => {
     try {
       setLoading(true);
       setError("");
@@ -37,58 +36,72 @@ export default function Alerts() {
       const res = await api.get(`/alerts?${params.toString()}`);
       const newAlerts = res.data.alerts || [];
       
-      // Track new alerts (for highlighting)
-      const existingIds = new Set(alerts.map(a => a.id));
-      const incomingIds = new Set(newAlerts.map(a => a.id));
-      const newIds = [...incomingIds].filter(id => !existingIds.has(id));
+      // Track new alerts against current list before replacing.
+      setAlerts((prev) => {
+        const existingIds = new Set(prev.map((a) => a.id));
+        const incomingIds = new Set(newAlerts.map((a) => a.id));
+        const newIds = [...incomingIds].filter((id) => !existingIds.has(id));
+        setNewAlertIds(new Set(newIds));
+        if (newIds.length > 0) {
+          setTimeout(() => setNewAlertIds(new Set()), 2000);
+        }
+        return newAlerts;
+      });
       
-      setNewAlertIds(new Set(newIds));
-      setAlerts(newAlerts);
-      
-      // Clear highlight after 2 seconds
-      if (newIds.length > 0) {
-        setTimeout(() => setNewAlertIds(new Set()), 2000);
-      }
     } catch (err) {
       console.error("Error fetching alerts:", err);
       setError("Failed to fetch alerts");
     } finally {
       setLoading(false);
     }
-  };
+  }, [sevFilter, linkFilter, statusFilter]);
 
-  // Auto-refresh every 3 seconds
   useEffect(() => {
     fetchAlerts();
-    
-    if (!autoRefresh) return;
-    
-    const interval = setInterval(() => {
-      fetchAlerts();
-    }, 3000);
-    
-    return () => clearInterval(interval);
-  }, [sevFilter, linkFilter, statusFilter, autoRefresh]);
+  }, [fetchAlerts]);
 
-  const handleCreateIncident = async (alert) => {
+  useEffect(() => {
+    if (!autoRefresh) return;
+
+    const wsUrl = API_URL.replace("http://", "ws://").replace("https://", "wss://");
+    const ws = new WebSocket(`${wsUrl}/ws/alerts`);
+
+    ws.onmessage = (event) => {
+      try {
+        const incoming = JSON.parse(event.data);
+        setAlerts((prev) => {
+          const merged = [incoming, ...prev.filter((a) => String(a.id) !== String(incoming.id))];
+          return merged.slice(0, 500);
+        });
+        setNewAlertIds(new Set([incoming.id]));
+        setTimeout(() => setNewAlertIds(new Set()), 2000);
+      } catch (e) {
+        // no-op
+      }
+    };
+
+    return () => ws.close();
+  }, [autoRefresh]);
+
+  const handleCreateIncident = async (alertItem) => {
     try {
-      setCreatingIncident(alert.id);
+      setCreatingIncident(alertItem.id);
       const res = await api.post("/incidents", {
-        source_ips: alert.source_ip,
-        attack_type: alert.attack_category || "Unknown",
-        severity: alert.severity
+        source_ips: alertItem.source_ip,
+        attack_type: alertItem.attack_category || "Unknown",
+        severity: alertItem.severity
       });
       
       // Link the alert to the new incident
-      await api.post(`/alerts/${alert.id}/link-incident`, {
+      await api.post(`/alerts/${alertItem.id}/link-incident`, {
         incident_id: res.data.id
       });
       
-      alert("Incident created! Alert linked.");
+      window.alert("Incident created! Alert linked.");
       fetchAlerts();
     } catch (err) {
       console.error("Error creating incident:", err);
-      alert("Failed to create incident");
+      window.alert("Failed to create incident");
     } finally {
       setCreatingIncident(null);
     }

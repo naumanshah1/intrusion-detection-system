@@ -13,7 +13,7 @@ function Select({ value, onValueChange, children }) {
 const SelectContext = React.createContext({});
 
 function SelectTrigger({ className, children, ...props }) {
-  const { open, setOpen, value } = React.useContext(SelectContext);
+  const { open, setOpen } = React.useContext(SelectContext);
   const ref = useRef(null);
 
   useEffect(() => {

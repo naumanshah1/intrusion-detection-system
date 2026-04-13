@@ -1,13 +1,12 @@
-import React, { useState, useEffect } from "react";
-import { useSearchParams, Link } from "react-router-dom";
+import React, { useState, useEffect, useCallback } from "react";
+import { useSearchParams } from "react-router-dom";
 import { motion } from "motion/react";
-import { AlertTriangle, Clock, Shield, Lock, Eye, MessageSquare, Copy, ChevronDown, ChevronUp, Play, PauseCircle, CheckCircle } from "lucide-react";
+import { AlertTriangle, Shield, Lock, MessageSquare, Copy, Play, PauseCircle, CheckCircle } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
-import { Input } from "../components/ui/input";
 import { Textarea } from "../components/ui/textarea";
-import { api } from "../config";
+import API_URL, { api } from "../config";
 
 const SEVERITY_COLORS = { critical: "bg-rose-500/20 text-rose-400", high: "bg-orange-500/20 text-orange-400", medium: "bg-amber-500/20 text-amber-400", low: "bg-cyan-500/20 text-cyan-400" };
 const STATUS_COLORS = { open: "bg-blue-500/20 text-blue-400", investigating: "bg-amber-500/20 text-amber-400", contained: "bg-orange-500/20 text-orange-400", resolved: "bg-emerald-500/20 text-emerald-400" };
@@ -25,24 +24,14 @@ export default function Incidents() {
   const [error, setError] = useState("");
   const [activeTab, setActiveTab] = useState("details");
 
-  useEffect(() => {
-    fetchIncidents();
-  }, []);
-
-  useEffect(() => {
-    if (expandedId && incidents.length > 0) {
-      fetchIncidentDetails(expandedId);
-    }
-  }, [expandedId, incidents]);
-
-  const fetchIncidents = async () => {
+  const fetchIncidents = useCallback(async () => {
     try {
       setLoading(true);
       setError("");
       const res = await api.get("/incidents");
       const incidentsList = Array.isArray(res.data) ? res.data : res.data.incidents || [];
       setIncidents(incidentsList);
-      
+
       if (selectedIncidentId && incidentsList.length > 0) {
         setExpandedId(selectedIncidentId);
       }
@@ -52,7 +41,24 @@ export default function Incidents() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [selectedIncidentId]);
+
+  useEffect(() => {
+    fetchIncidents();
+  }, [fetchIncidents]);
+
+  useEffect(() => {
+    const wsUrl = API_URL.replace("http://", "ws://").replace("https://", "wss://");
+    const ws = new WebSocket(`${wsUrl}/ws/incidents`);
+    ws.onmessage = () => fetchIncidents();
+    return () => ws.close();
+  }, [fetchIncidents]);
+
+  useEffect(() => {
+    if (expandedId && incidents.length > 0) {
+      fetchIncidentDetails(expandedId);
+    }
+  }, [expandedId, incidents]);
 
   const fetchIncidentDetails = async (id) => {
     try {
@@ -159,7 +165,7 @@ export default function Incidents() {
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0 flex-1">
-                      <div className="text-xs font-mono text-muted-foreground">{incident.id.substring(0, 8)}</div>
+                      <div className="text-xs font-mono text-muted-foreground">{String(incident.id).substring(0, 8)}</div>
                       <div className="text-xs font-semibold truncate">{incident.attack_type}</div>
                       <div className="text-xs text-muted-foreground mt-1">{incident.source_ips}</div>
                     </div>
@@ -184,7 +190,7 @@ export default function Incidents() {
                       <AlertTriangle size={18} className="text-rose-400" />
                       {selectedIncident.attack_type}
                     </CardTitle>
-                    <p className="text-xs text-muted-foreground mt-1 font-mono">{selectedIncident.id}</p>
+                    <p className="text-xs text-muted-foreground mt-1 font-mono">{String(selectedIncident.id)}</p>
                   </div>
                   <Badge className={`text-sm ${SEVERITY_COLORS[selectedIncident.severity] || ""}`}>
                     {selectedIncident.severity}

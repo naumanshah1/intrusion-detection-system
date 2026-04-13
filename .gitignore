@@ -1,0 +1,5 @@
+ids.db
+ids.db-shm
+ids.db-wal
+__pycache__/
+*.pyc

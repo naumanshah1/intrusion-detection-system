@@ -1,20 +1,47 @@
-import React, { useState } from "react";
-import { motion } from "motion/react";
-import { Cpu, Circle, Star, BarChart2 } from "lucide-react";
+import React, { useState, useEffect } from "react";
+import { Cpu, Circle, AlertTriangle } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
-import { Button } from "../components/ui/button";
-import { MOCK_MODELS } from "../lib/ids-data";
+import { api } from "../config";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, RadarChart, PolarGrid, PolarAngleAxis, Radar } from "recharts";
 
 export default function Models() {
-  const [selected, setSelected] = useState(MOCK_MODELS[0]);
+  const [models, setModels] = useState([]);
+  const [selected, setSelected] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const fetchMetrics = async () => {
+      setLoading(true);
+      try {
+        const res = await api.get("/models/metrics");
+        const backendModels = res.data.models || [];
+        setModels(backendModels);
+        setSelected(backendModels[0] || null);
+      } catch (err) {
+        setError("Backend model metrics unavailable");
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchMetrics();
+  }, []);
+
+  if (!selected) {
+    return (
+      <div className="p-4 md:p-6 space-y-5">
+        <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><Cpu size={20} className="text-primary" />ML Models</h1>
+        <Card className="p-5 text-sm text-muted-foreground">{loading ? "Loading model metrics..." : "No model metrics found."}</Card>
+      </div>
+    );
+  }
 
   const metricsData = [
-    { metric: "Accuracy", value: selected.accuracy * 100 },
-    { metric: "Precision", value: selected.precision * 100 },
-    { metric: "Recall", value: selected.recall * 100 },
-    { metric: "F1 Score", value: selected.f1_score * 100 },
+    { metric: "Accuracy", value: (selected.accuracy || 0) * 100 },
+    { metric: "Precision", value: (selected.precision || 0) * 100 },
+    { metric: "Recall", value: (selected.recall || 0) * 100 },
+    { metric: "F1 Score", value: (selected.f1_score || 0) * 100 },
   ];
 
   const fiData = (selected.feature_importance || []).slice(0, 10).map((fi) => ({
@@ -22,28 +49,32 @@ export default function Models() {
     importance: +(fi.importance * 100).toFixed(1),
   }));
 
+  const cm = selected.confusion_matrix || [];
+
   return (
     <div className="p-4 md:p-6 space-y-5">
       <div>
         <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><Cpu size={20} className="text-primary" />ML Models</h1>
-        <p className="text-sm text-muted-foreground mt-0.5">Model versioning, metrics, and deployment status</p>
+        <p className="text-sm text-muted-foreground mt-0.5">Model metrics, feature importance, and deployment status</p>
       </div>
 
+      {error && <Card className="bg-amber-500/10 border-amber-500/20 p-3 text-xs text-amber-400 flex items-center gap-2"><AlertTriangle size={12} />{error}</Card>}
+
       <div className="grid md:grid-cols-3 gap-4">
-        {MOCK_MODELS.map((model) => (
-          <Card key={model.id} onClick={() => setSelected(model)} className={`cursor-pointer transition-all ${selected.id === model.id ? "border-primary/40 bg-primary/5" : "hover:border-border/80"}`}>
+        {models.map((model) => (
+          <Card key={model.id || model.name} onClick={() => setSelected(model)} className={`cursor-pointer transition-all ${selected.id === model.id ? "border-primary/40 bg-primary/5" : "hover:border-border/80"}`}>
             <CardContent className="p-4">
               <div className="flex items-center justify-between mb-3">
                 <Badge variant={model.is_active ? "default" : "secondary"} className="text-[10px]">
                   <Circle size={5} className={`mr-1 fill-current ${model.is_active ? "text-emerald-400" : "text-muted-foreground"}`} />
                   {model.is_active ? "Active" : "Inactive"}
                 </Badge>
-                <span className="text-[10px] font-mono text-muted-foreground">{model.id}</span>
+                <span className="text-[10px] font-mono text-muted-foreground">{model.id || "model"}</span>
               </div>
               <p className="font-semibold text-sm">{model.name}</p>
-              <p className="text-xs text-muted-foreground mt-0.5">{model.version} • {model.algorithm}</p>
+              <p className="text-xs text-muted-foreground mt-0.5">{model.version} � {model.algorithm}</p>
               <div className="mt-3 flex items-baseline gap-1">
-                <span className="text-xl font-bold font-mono text-primary">{(model.accuracy * 100).toFixed(2)}%</span>
+                <span className="text-xl font-bold font-mono text-primary">{((model.accuracy || 0) * 100).toFixed(2)}%</span>
                 <span className="text-xs text-muted-foreground">accuracy</span>
               </div>
             </CardContent>
@@ -53,7 +84,7 @@ export default function Models() {
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <Card>
-          <CardHeader><CardTitle className="text-sm">Performance Metrics</CardTitle></CardHeader>
+          <CardHeader><CardTitle className="text-sm">Performance Metrics <Badge variant="outline" className="ml-2 text-[9px]">LIVE</Badge></CardTitle></CardHeader>
           <CardContent className="h-64">
             <ResponsiveContainer width="100%" height="100%">
               <RadarChart cx="50%" cy="50%" outerRadius="70%" data={metricsData}>
@@ -66,7 +97,7 @@ export default function Models() {
         </Card>
 
         <Card>
-          <CardHeader><CardTitle className="text-sm">Feature Importance (Top 10)</CardTitle></CardHeader>
+          <CardHeader><CardTitle className="text-sm">Feature Importance (Top 10) <Badge variant="outline" className="ml-2 text-[9px]">LIVE</Badge></CardTitle></CardHeader>
           <CardContent className="h-64">
             {fiData.length > 0 ? (
               <ResponsiveContainer width="100%" height="100%">
@@ -84,28 +115,28 @@ export default function Models() {
         </Card>
       </div>
 
-      <Card>
-        <CardHeader><CardTitle className="text-sm">Model Details — {selected.name} {selected.version}</CardTitle></CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-xs">
-            {[
-              { label: "Algorithm", value: selected.algorithm },
-              { label: "Trained On", value: new Date(selected.trained_on).toLocaleDateString() },
-              { label: "Deployed", value: new Date(selected.deployed_at).toLocaleDateString() },
-              { label: "Status", value: selected.is_active ? "Active" : "Inactive" },
-              { label: "Accuracy", value: `${(selected.accuracy * 100).toFixed(2)}%` },
-              { label: "Precision", value: `${(selected.precision * 100).toFixed(2)}%` },
-              { label: "Recall", value: `${(selected.recall * 100).toFixed(2)}%` },
-              { label: "F1 Score", value: `${(selected.f1_score * 100).toFixed(2)}%` },
-            ].map((item) => (
-              <div key={item.label}>
-                <p className="text-muted-foreground mb-0.5">{item.label}</p>
-                <p className="font-mono font-medium">{item.value}</p>
+      {cm.length > 0 && (
+        <Card>
+          <CardHeader><CardTitle className="text-sm">Confusion Matrix <Badge variant="outline" className="ml-2 text-[9px]">LIVE</Badge></CardTitle></CardHeader>
+          <CardContent>
+            <div className="flex items-center justify-center">
+              <div className="inline-block">
+                <div className="grid grid-cols-3 gap-0 text-xs text-center">
+                  <div></div>
+                  <div className="py-2 font-semibold text-muted-foreground">Predicted Normal</div>
+                  <div className="py-2 font-semibold text-muted-foreground">Predicted Attack</div>
+                  <div className="px-4 py-3 font-semibold text-muted-foreground">Actual Normal</div>
+                  <div className="px-6 py-3 bg-emerald-500/10 border border-emerald-500/20 rounded-tl-lg font-mono font-bold text-emerald-400">{cm[0]?.[0]?.toLocaleString()}</div>
+                  <div className="px-6 py-3 bg-rose-500/10 border border-rose-500/20 rounded-tr-lg font-mono font-bold text-rose-400">{cm[0]?.[1]?.toLocaleString()}</div>
+                  <div className="px-4 py-3 font-semibold text-muted-foreground">Actual Attack</div>
+                  <div className="px-6 py-3 bg-rose-500/10 border border-rose-500/20 rounded-bl-lg font-mono font-bold text-rose-400">{cm[1]?.[0]?.toLocaleString()}</div>
+                  <div className="px-6 py-3 bg-emerald-500/10 border border-emerald-500/20 rounded-br-lg font-mono font-bold text-emerald-400">{cm[1]?.[1]?.toLocaleString()}</div>
+                </div>
               </div>
-            ))}
-          </div>
-        </CardContent>
-      </Card>
+            </div>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }

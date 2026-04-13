@@ -1,48 +1,66 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { motion } from "motion/react";
-import { Terminal, Circle, Pause, Play, Trash2, Download, Filter } from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
+import { Terminal, Circle, Pause, Play, Trash2, Download, Wifi, WifiOff } from "lucide-react";
+import { Card } from "../components/ui/card";
 import { Button } from "../components/ui/button";
-import { INITIAL_LOGS } from "../lib/ids-data";
+import API_URL from "../config";
 
 const LEVEL_STYLES = {
   ALERT: "text-rose-400", WARN: "text-amber-400", INFO: "text-emerald-400", DEBUG: "text-muted-foreground",
 };
 
-const LIVE_MESSAGES = [
-  { level: "INFO", source: "PACKET-CAPTURE", message: "Captured 384 packets from interface eth0 in last 1s" },
-  { level: "DEBUG", source: "FEATURE-EXT", message: "Extracted 41 KDD features from flow batch #" },
-  { level: "INFO", source: "ML-ENGINE", message: "RandomForest v2.3 inference: batch normal traffic" },
-  { level: "WARN", source: "NET-MONITOR", message: "Connection rate elevated on port 443: 87/s" },
-  { level: "INFO", source: "FIREWALL", message: "Rule RUL-003 matched: 12 ICMP packets filtered" },
-  { level: "DEBUG", source: "DB", message: "Log entry written — total records: " },
-  { level: "INFO", source: "NET-MONITOR", message: "Interface eth0 throughput: 14.2 Mbps rx / 2.1 Mbps tx" },
-  { level: "ALERT", source: "ML-ENGINE", message: "Anomalous pattern detected: investigating..." },
-  { level: "INFO", source: "ML-ENGINE", message: "False alarm — pattern resolved as normal traffic" },
-  { level: "DEBUG", source: "CONFIG", message: "Health check passed — all systems nominal" },
-];
-
 export default function Console() {
-  const [logs, setLogs] = useState(INITIAL_LOGS);
+  const [logs, setLogs] = useState([]);
   const [isLive, setIsLive] = useState(true);
   const [filter, setFilter] = useState("ALL");
+  const [wsConnected, setWsConnected] = useState(false);
   const scrollRef = useRef(null);
-  const batchRef = useRef(8822);
+  const wsRef = useRef(null);
+
+  // Connect to WebSocket for real-time log updates
+  const connectWebSocket = useCallback(() => {
+    if (!isLive) return;
+
+    const token = localStorage.getItem("token");
+    if (!token) return;
+
+    try {
+      const wsUrl = API_URL.replace("http://", "ws://").replace("https://", "wss://");
+      const ws = new WebSocket(`${wsUrl}/ws/logs`);
+      wsRef.current = ws;
+
+      ws.onopen = () => setWsConnected(true);
+      ws.onclose = () => setWsConnected(false);
+      ws.onerror = () => setWsConnected(false);
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data?.message) {
+            setLogs((prev) => [
+              {
+                timestamp: data.timestamp,
+                level: data.level || "INFO",
+                source: data.source || "PIPELINE",
+                message: data.message,
+              },
+              ...prev,
+            ].slice(0, 300));
+          }
+        } catch (e) {
+          // ignore
+        }
+      };
+    } catch (e) {
+      console.error("WebSocket connection failed:", e);
+    }
+  }, [isLive]);
 
   useEffect(() => {
-    if (!isLive) return;
-    const interval = setInterval(() => {
-      const template = LIVE_MESSAGES[Math.floor(Math.random() * LIVE_MESSAGES.length)];
-      batchRef.current += 1;
-      const now = new Date();
-      const ts = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}.${String(now.getMilliseconds()).padStart(3, "0")}`;
-      setLogs((prev) => [
-        { timestamp: ts, level: template.level, source: template.source, message: template.message + (template.message.endsWith(" ") ? batchRef.current : "") },
-        ...prev,
-      ].slice(0, 200));
-    }, 1800 + Math.random() * 1200);
-    return () => clearInterval(interval);
-  }, [isLive]);
+    connectWebSocket();
+    return () => {
+      if (wsRef.current) wsRef.current.close();
+    };
+  }, [connectWebSocket]);
 
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = 0;
@@ -64,7 +82,12 @@ export default function Console() {
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 flex-shrink-0">
         <div>
           <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><Terminal size={20} className="text-emerald-400" />Live Console</h1>
-          <p className="text-sm text-muted-foreground mt-0.5">{filtered.length} log entries • {isLive ? "streaming" : "paused"}</p>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            {filtered.length} log entries • {isLive ? "streaming" : "paused"} •{" "}
+            <span className={wsConnected ? "text-emerald-400" : "text-rose-400"}>
+              {wsConnected ? "connected" : "disconnected"}
+            </span>
+          </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {["ALL", "ALERT", "WARN", "INFO", "DEBUG"].map((level) => (
@@ -93,7 +116,10 @@ export default function Console() {
             <div className="w-2.5 h-2.5 rounded-full bg-emerald-400/80" />
           </div>
           <span className="text-[10px] font-mono text-muted-foreground ml-2">ids-sentinel — real-time logs</span>
-          {isLive && <Circle size={6} className="ml-auto fill-emerald-400 text-emerald-400 animate-pulse" />}
+          <div className="ml-auto flex items-center gap-1.5">
+            {wsConnected ? <Wifi size={10} className="text-emerald-400" /> : <WifiOff size={10} className="text-rose-400" />}
+            {isLive && <Circle size={6} className="fill-emerald-400 text-emerald-400 animate-pulse" />}
+          </div>
         </div>
         <div ref={scrollRef} className="overflow-y-auto h-full p-4 font-mono text-xs space-y-0.5 bg-[#0a0f1a]" style={{ maxHeight: "calc(100vh - 280px)" }}>
           {filtered.map((log, i) => (

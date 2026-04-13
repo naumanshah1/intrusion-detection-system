@@ -1,25 +1,45 @@
 import { useState, useEffect } from "react";
-import { api } from "../config";
+import API_URL, { api } from "../config";
 
 function Pipeline() {
   const [pipelineStatus, setPipelineStatus] = useState([]);
-  const [loading, setLoading] = useState(false);
+  const [dashboardMetrics, setDashboardMetrics] = useState({
+    total_traffic: 0,
+    active_incidents: 0,
+    total_alerts: 0,
+    avg_latency_ms: 45,
+  });
 
   useEffect(() => {
     fetchPipelineStatus();
-    const interval = setInterval(fetchPipelineStatus, 5000); // Auto-refresh every 5 seconds
-    return () => clearInterval(interval);
+    return undefined;
+  }, []);
+
+  useEffect(() => {
+    const wsUrl = API_URL.replace("http://", "ws://").replace("https://", "wss://");
+    const ws = new WebSocket(`${wsUrl}/ws/dashboard`);
+    ws.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data);
+        setDashboardMetrics((prev) => ({
+          ...prev,
+          total_traffic: payload.total_traffic || 0,
+          total_alerts: payload.total_alerts || 0,
+          active_incidents: payload.active_incidents || 0,
+        }));
+      } catch (e) {
+        // no-op
+      }
+    };
+    return () => ws.close();
   }, []);
 
   const fetchPipelineStatus = async () => {
     try {
-      setLoading(true);
       const res = await api.get("/pipeline/status");
       setPipelineStatus(res.data);
     } catch (error) {
       console.error("Error fetching pipeline status:", error);
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -131,23 +151,23 @@ function Pipeline() {
           <div className="grid grid-cols-2 gap-4">
             <div className="bg-blue-50 p-4 rounded">
               <p className="text-gray-600 text-sm">Total Packets Processed</p>
-              <p className="text-3xl font-bold text-blue-600">1.2M</p>
-              <p className="text-xs text-gray-500 mt-1">Last 24 hours</p>
+              <p className="text-3xl font-bold text-blue-600">{dashboardMetrics.total_traffic.toLocaleString()}</p>
+              <p className="text-xs text-gray-500 mt-1">Live cumulative</p>
             </div>
             <div className="bg-green-50 p-4 rounded">
               <p className="text-gray-600 text-sm">Avg Processing Time</p>
-              <p className="text-3xl font-bold text-green-600">42ms</p>
+              <p className="text-3xl font-bold text-green-600">{dashboardMetrics.avg_latency_ms}ms</p>
               <p className="text-xs text-gray-500 mt-1">Per packet</p>
             </div>
             <div className="bg-orange-50 p-4 rounded">
-              <p className="text-gray-600 text-sm">Current Backlog</p>
-              <p className="text-3xl font-bold text-orange-600">125</p>
-              <p className="text-xs text-gray-500 mt-1">Pending items</p>
+              <p className="text-gray-600 text-sm">Active Incidents</p>
+              <p className="text-3xl font-bold text-orange-600">{dashboardMetrics.active_incidents}</p>
+              <p className="text-xs text-gray-500 mt-1">Open + investigating</p>
             </div>
             <div className="bg-purple-50 p-4 rounded">
-              <p className="text-gray-600 text-sm">System Uptime</p>
-              <p className="text-3xl font-bold text-purple-600">99.9%</p>
-              <p className="text-xs text-gray-500 mt-1">Last 7 days</p>
+              <p className="text-gray-600 text-sm">Total Alerts</p>
+              <p className="text-3xl font-bold text-purple-600">{dashboardMetrics.total_alerts}</p>
+              <p className="text-xs text-gray-500 mt-1">Detected threats</p>
             </div>
           </div>
         </div>

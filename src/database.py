@@ -1,10 +1,14 @@
-from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, DateTime
+from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, DateTime, Float
 from sqlalchemy.orm import declarative_base, sessionmaker
 from datetime import datetime, timedelta
+import sqlite3
 
 DATABASE_URL = "sqlite:///./ids.db"
 
-engine = create_engine(DATABASE_URL)
+engine = create_engine(
+    DATABASE_URL,
+    connect_args={"check_same_thread": False, "timeout": 30},
+)
 SessionLocal = sessionmaker(bind=engine)
 
 Base = declarative_base()
@@ -73,8 +77,11 @@ class Alert(Base):
     type = Column(String)
     severity = Column(String)
     source_ip = Column(String, nullable=True)
+    destination_ip = Column(String, nullable=True)
     attack_category = Column(String, nullable=True)
+    confidence = Column(Float, nullable=True)
     status = Column(String, default="unlinked")  # unlinked, linked, acknowledged, false_positive
+    raw_features = Column(String, nullable=True)  # JSON string of 41 NSL-KDD features
     timestamp = Column(DateTime, default=datetime.utcnow)
 
 class Rule(Base):
@@ -87,6 +94,9 @@ class Rule(Base):
     priority = Column(Integer, default=0)
     automation = Column(String, default="manual")  # manual / auto
     simulated_blocks = Column(Integer, default=0)
+    type = Column(String, default="block")
+    source_ip = Column(String, nullable=True)
+    enabled = Column(String, default="true")
     timestamp = Column(DateTime, default=datetime.utcnow)
 
 # Feature 1: Incidents (Grouping Alerts)
@@ -94,6 +104,7 @@ class Incident(Base):
     __tablename__ = "incidents"
 
     id = Column(Integer, primary_key=True, index=True)
+    incident_id = Column(String, nullable=True)
     title = Column(String)
     description = Column(String)
     status = Column(String, default="Open")  # Open, Investigating, Contained, Resolved
@@ -183,104 +194,51 @@ class PipelineStatus(Base):
 Base.metadata.create_all(bind=engine)
 
 
+def ensure_schema_compatibility():
+    """Apply lightweight SQLite migrations for columns used by real-time streaming."""
+    conn = sqlite3.connect("ids.db")
+    cur = conn.cursor()
+    cur.execute("PRAGMA journal_mode=WAL")
+    cur.execute("PRAGMA synchronous=NORMAL")
+
+    def add_column_if_missing(table_name, column_name, column_sql):
+        cur.execute(f"PRAGMA table_info({table_name})")
+        existing = {row[1] for row in cur.fetchall()}
+        if column_name not in existing:
+            cur.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_sql}")
+
+    add_column_if_missing("alerts", "destination_ip", "TEXT")
+    add_column_if_missing("alerts", "confidence", "REAL")
+    add_column_if_missing("alerts", "raw_features", "TEXT")
+    add_column_if_missing("rules", "type", "TEXT DEFAULT 'block'")
+    add_column_if_missing("rules", "source_ip", "TEXT")
+    add_column_if_missing("rules", "enabled", "TEXT DEFAULT 'true'")
+    add_column_if_missing("incidents", "incident_id", "TEXT")
+
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_alerts_timestamp ON alerts(timestamp)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_alerts_incident_id ON alerts(incident_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_incidents_created_at ON incidents(created_at)")
+
+    conn.commit()
+    conn.close()
+
+
+ensure_schema_compatibility()
+
+
 # ========== TEST DATA GENERATION ==========
 
 def generate_test_data():
-    """Generate default user, 30 test alerts, and group them into incidents"""
-    from datetime import timedelta
-    import random
+    """Keep bootstrap minimal: only ensure a default analyst user exists."""
     import hashlib
-    
+
     db = SessionLocal()
-    
-    # Check if test user already exists
     test_user = db.query(User).filter(User.username == "analyst").first()
     if not test_user:
-        # Create default analyst user
         hashed_pwd = hashlib.sha256("analyst123".encode()).hexdigest()
-        test_user = User(
-            username="analyst",
-            password=hashed_pwd,
-            role="analyst"
-        )
-        db.add(test_user)
+        db.add(User(username="analyst", password=hashed_pwd, role="analyst"))
         db.commit()
         print("✓ Created default analyst user (analyst / analyst123)")
-    
-    # Check if data already exists
-    existing_alerts = db.query(Alert).count()
-    if existing_alerts > 0:
-        print("✓ Test data already exists, skipping generation")
-        db.close()
-        return
-    
-    print("🔧 Generating test data...")
-    
-    # Test IPs and attack patterns
-    attack_ips = ["192.168.1.100", "10.0.0.50", "172.16.0.25", "203.0.113.45", "198.51.100.10"]
-    attack_categories = ["DoS", "Probe", "R2L", "U2R", "DoS", "Probe"]
-    severities = ["low", "medium", "high", "critical"]
-    
-    # Create 30 test alerts
-    alerts_data = []
-    for i in range(30):
-        # Create some alerts with same IP/category to test grouping
-        ip_idx = i % len(attack_ips)
-        cat_idx = i % len(attack_categories)
-        sev_idx = i % len(severities)
-        
-        alert = Alert(
-            type="Intrusion Detected",
-            severity=severities[sev_idx],
-            source_ip=attack_ips[ip_idx],
-            attack_category=attack_categories[cat_idx],
-            status="unlinked",
-            timestamp=datetime.utcnow() - timedelta(minutes=random.randint(0, 60))
-        )
-        db.add(alert)
-        alerts_data.append({
-            "ip": attack_ips[ip_idx],
-            "category": attack_categories[cat_idx],
-            "severity": severities[sev_idx],
-            "alert_obj": alert
-        })
-    
-    db.flush()  # Get IDs
-    print(f"✓ Created {len(alerts_data)} alerts")
-    
-    # Now group alerts into incidents based on IP + category + time window
-    incidents_created = 0
-    grouped_alerts = {}
-    
-    for alert_data in alerts_data:
-        key = (alert_data["ip"], alert_data["category"])
-        if key not in grouped_alerts:
-            grouped_alerts[key] = []
-        grouped_alerts[key].append(alert_data)
-    
-    # Create incidents and link alerts
-    for (source_ip, attack_type), alert_list in grouped_alerts.items():
-        incident = Incident(
-            title=f"Attack from {source_ip}",
-            description=f"Multiple {attack_type} attacks detected",
-            severity=max(a["severity"] for a in alert_list),
-            source_ips=source_ip,
-            attack_type=attack_type,
-            status="open",
-            alert_count=len(alert_list),
-            created_at=datetime.utcnow() - timedelta(minutes=random.randint(5, 30))
-        )
-        db.add(incident)
-        db.flush()
-        
-        # Link alerts to incident
-        for alert_data in alert_list:
-            alert_data["alert_obj"].incident_id = incident.id
-            alert_data["alert_obj"].status = "linked"
-        
-        incidents_created += 1
-    
-    db.commit()
-    print(f"✓ Created {incidents_created} incidents with {len(alerts_data)} linked alerts")
-    print("✓ Test data generation complete!")
     db.close()
+    return
+

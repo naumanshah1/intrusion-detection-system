@@ -68,7 +68,7 @@ function APIHub() {
             <code className="bg-gray-950 border border-gray-700 px-4 py-3 rounded-lg text-emerald-300 font-mono text-lg flex-1">
               {newKey}
             </code>
-            <button 
+            <button
               onClick={() => {
                 navigator.clipboard.writeText(newKey);
                 alert("Copied to clipboard!");
@@ -85,9 +85,9 @@ function APIHub() {
         <table className="w-full text-left mx-auto">
           <thead className="bg-gray-900/80 border-b border-gray-700">
             <tr>
-               <th className="p-5 font-semibold text-gray-300">Key Identifier</th>
-               <th className="p-5 font-semibold text-gray-300">Created At</th>
-               <th className="p-5 font-semibold text-gray-300 text-right">Actions</th>
+              <th className="p-5 font-semibold text-gray-300">Key Identifier</th>
+              <th className="p-5 font-semibold text-gray-300">Created At</th>
+              <th className="p-5 font-semibold text-gray-300 text-right">Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -103,7 +103,7 @@ function APIHub() {
                   </td>
                   <td className="p-5 text-gray-400 text-sm">{new Date(keyObj.created_at).toLocaleString()}</td>
                   <td className="p-5 text-right">
-                    <button 
+                    <button
                       onClick={() => revokeKey(keyObj.id)}
                       className="text-red-400 hover:text-white bg-red-900/20 hover:bg-red-600 px-4 py-2 border border-red-500/30 rounded font-semibold text-sm transition-all"
                     >
